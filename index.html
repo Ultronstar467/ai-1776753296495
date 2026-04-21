@@ -1,0 +1,370 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Snake Game</title>
+    <style>
+        body {
+            font-family: 'Press Start 2P', cursive; /* A retro-gaming font is nice, but fallback */
+            font-family: monospace;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            min-height: 100vh;
+            margin: 0;
+            background-color: #222;
+            color: #eee;
+            overflow: hidden;
+            padding: 20px;
+            box-sizing: border-box;
+        }
+
+        h1 {
+            color: #8bc34a; /* Green for snake */
+            margin-bottom: 20px;
+            text-align: center;
+        }
+
+        .game-container {
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            background-color: #333;
+            padding: 20px;
+            border-radius: 10px;
+            box-shadow: 0 0 15px rgba(0, 0, 0, 0.5);
+            max-width: 90%;
+            width: 500px; /* Base width */
+            box-sizing: border-box;
+        }
+
+        canvas {
+            background-color: #000;
+            border: 2px solid #8bc34a;
+            display: block; /* Remove extra space below canvas */
+            margin-bottom: 20px;
+            max-width: 100%; /* Ensure canvas scales down on smaller screens */
+            height: auto; /* Maintain aspect ratio */
+        }
+
+        .score-board {
+            display: flex;
+            justify-content: space-between;
+            width: 100%;
+            margin-bottom: 20px;
+            font-size: 1.2em;
+        }
+
+        button {
+            background-color: #8bc34a;
+            color: #222;
+            border: none;
+            padding: 10px 20px;
+            font-size: 1.2em;
+            cursor: pointer;
+            border-radius: 5px;
+            transition: background-color 0.3s ease;
+            width: 100%;
+        }
+
+        button:hover {
+            background-color: #7cb342;
+        }
+
+        #game-message {
+            margin-top: 15px;
+            font-size: 1.5em;
+            color: #ffeb3b; /* Yellow for messages */
+            text-align: center;
+            min-height: 30px; /* Reserve space */
+        }
+
+        @media (max-width: 600px) {
+            h1 {
+                font-size: 1.8em;
+            }
+            .game-container {
+                padding: 15px;
+            }
+            .score-board {
+                font-size: 1em;
+            }
+            button {
+                font-size: 1em;
+                padding: 8px 15px;
+            }
+            #game-message {
+                font-size: 1.2em;
+            }
+        }
+    </style>
+</head>
+<body>
+    <h1>Snake Game</h1>
+    <div class="game-container">
+        <div class="score-board">
+            <span>Score: <span id="score">0</span></span>
+            <span>High Score: <span id="high-score">0</span></span>
+        </div>
+        <canvas id="gameCanvas"></canvas>
+        <button id="startButton">Start Game</button>
+        <div id="game-message">Press "Start Game" or Arrow Keys to Play!</div>
+    </div>
+
+    <script>
+        // Game Constants
+        const CANVAS_SIZE = 400; // px
+        const CELL_SIZE = 20;    // px
+        const INITIAL_SPEED = 150; // ms (lower is faster)
+        const SPEED_INCREMENT_THRESHOLD = 5; // How many food eaten before speed increases
+        const SPEED_INCREASE_AMOUNT = 5; // ms decrease
+        const MAX_SPEED = 50; // ms, fastest possible game speed
+
+        // Game Variables
+        let snake = [];
+        let food = {};
+        let direction = 'right';
+        let score = 0;
+        let gameSpeed = INITIAL_SPEED;
+        let gameInterval;
+        let isGameRunning = false;
+        let currentLevel = 1;
+        let foodEatenThisLevel = 0;
+
+        // DOM Elements
+        const canvas = document.getElementById('gameCanvas');
+        const ctx = canvas.getContext('2d');
+        const scoreDisplay = document.getElementById('score');
+        const highScoreDisplay = document.getElementById('high-score');
+        const startButton = document.getElementById('startButton');
+        const gameMessage = document.getElementById('game-message');
+
+        canvas.width = CANVAS_SIZE;
+        canvas.height = CANVAS_SIZE;
+
+        // Backend API URL
+        const API_URL = 'http://127.0.0.1:8000'; // Adjust if your FastAPI server is on a different port/host
+
+        // Initialize Game State
+        function initGame() {
+            snake = [{ x: 10 * CELL_SIZE, y: 10 * CELL_SIZE }];
+            direction = 'right';
+            score = 0;
+            gameSpeed = INITIAL_SPEED;
+            currentLevel = 1;
+            foodEatenThisLevel = 0;
+            scoreDisplay.textContent = score;
+            isGameRunning = false; // Game starts paused, waiting for first move or start button
+            gameMessage.textContent = 'Press Arrow Keys to Start!';
+            startButton.textContent = 'Restart Game';
+            generateFood();
+            draw();
+            clearInterval(gameInterval); // Clear any existing interval
+        }
+
+        // Fetch High Score from Backend
+        async function fetchGameState() {
+            try {
+                const response = await fetch(`${API_URL}/state`);
+                const data = await response.json();
+                highScoreDisplay.textContent = data.high_score;
+            } catch (error) {
+                console.error('Error fetching game state:', error);
+                highScoreDisplay.textContent = 'N/A';
+            }
+        }
+
+        // Notify Backend of Game Start
+        async function postStartGame() {
+            try {
+                await fetch(`${API_URL}/start_game`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' }
+                });
+            } catch (error) {
+                console.error('Error posting game start:', error);
+            }
+        }
+
+        // Notify Backend of Game Over
+        async function postGameOver(finalScore) {
+            try {
+                await fetch(`${API_URL}/game_over`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ score: finalScore })
+                });
+                // After game over, refetch to update high score display
+                await fetchGameState();
+            } catch (error) {
+                console.error('Error posting game over:', error);
+            }
+        }
+
+        // Start/Restart Game
+        startButton.addEventListener('click', () => {
+            initGame();
+            postStartGame();
+            if (!isGameRunning) {
+                // If game starts via button, immediately start the loop
+                startGameLoop();
+                gameMessage.textContent = '';
+                isGameRunning = true;
+            }
+        });
+
+        // Game Loop
+        function startGameLoop() {
+            clearInterval(gameInterval); // Ensure only one loop is active
+            gameInterval = setInterval(() => {
+                update();
+                draw();
+            }, gameSpeed);
+        }
+
+        // Draw Game Elements
+        function draw() {
+            ctx.clearRect(0, 0, CANVAS_SIZE, CANVAS_SIZE); // Clear canvas
+
+            // Draw Snake
+            ctx.fillStyle = '#8bc34a'; // Green
+            snake.forEach(segment => {
+                ctx.fillRect(segment.x, segment.y, CELL_SIZE, CELL_SIZE);
+            });
+
+            // Draw Food
+            ctx.fillStyle = '#f44336'; // Red
+            ctx.fillRect(food.x, food.y, CELL_SIZE, CELL_SIZE);
+        }
+
+        // Update Game State
+        function update() {
+            if (!isGameRunning) return;
+
+            // Move Snake
+            const head = { x: snake[0].x, y: snake[0].y };
+            switch (direction) {
+                case 'up': head.y -= CELL_SIZE; break;
+                case 'down': head.y += CELL_SIZE; break;
+                case 'left': head.x -= CELL_SIZE; break;
+                case 'right': head.x += CELL_SIZE; break;
+            }
+
+            // Check for Game Over
+            if (checkCollision(head)) {
+                endGame();
+                return;
+            }
+
+            snake.unshift(head); // Add new head
+
+            // Check if food is eaten
+            if (head.x === food.x && head.y === food.y) {
+                score++;
+                foodEatenThisLevel++;
+                scoreDisplay.textContent = score;
+
+                // Increase difficulty
+                if (foodEatenThisLevel >= SPEED_INCREMENT_THRESHOLD) {
+                    gameSpeed = Math.max(MAX_SPEED, gameSpeed - SPEED_INCREASE_AMOUNT);
+                    currentLevel++;
+                    foodEatenThisLevel = 0; // Reset for next level
+                    clearInterval(gameInterval);
+                    gameInterval = setInterval(() => {
+                        update();
+                        draw();
+                    }, gameSpeed);
+                }
+                generateFood();
+            } else {
+                snake.pop(); // Remove tail if no food eaten
+            }
+        }
+
+        // Generate Food at Random Position
+        function generateFood() {
+            let newFoodPos;
+            let collisionWithSnake;
+
+            do {
+                newFoodPos = {
+                    x: Math.floor(Math.random() * (CANVAS_SIZE / CELL_SIZE)) * CELL_SIZE,
+                    y: Math.floor(Math.random() * (CANVAS_SIZE / CELL_SIZE)) * CELL_SIZE
+                };
+                collisionWithSnake = snake.some(segment =>
+                    segment.x === newFoodPos.x && segment.y === newFoodPos.y
+                );
+            } while (collisionWithSnake);
+
+            food = newFoodPos;
+        }
+
+        // Check for Collisions
+        function checkCollision(head) {
+            // Wall collision
+            if (
+                head.x < 0 ||
+                head.x >= CANVAS_SIZE ||
+                head.y < 0 ||
+                head.y >= CANVAS_SIZE
+            ) {
+                return true;
+            }
+
+            // Self-collision (start checking from 4th segment to avoid immediate collision with neck)
+            for (let i = 1; i < snake.length; i++) {
+                if (head.x === snake[i].x && head.y === snake[i].y) {
+                    return true;
+                }
+            }
+            return false;
+        }
+
+        // End Game
+        function endGame() {
+            isGameRunning = false;
+            clearInterval(gameInterval);
+            gameMessage.textContent = `Game Over! Your Score: ${score}`;
+            startButton.textContent = 'Play Again';
+            postGameOver(score);
+        }
+
+        // Handle Keyboard Input
+        document.addEventListener('keydown', e => {
+            const oldDirection = direction; // Store old direction to prevent 180-degree turns
+            switch (e.key) {
+                case 'ArrowUp':
+                    if (oldDirection !== 'down') direction = 'up';
+                    break;
+                case 'ArrowDown':
+                    if (oldDirection !== 'up') direction = 'down';
+                    break;
+                case 'ArrowLeft':
+                    if (oldDirection !== 'right') direction = 'left';
+                    break;
+                case 'ArrowRight':
+                    if (oldDirection !== 'left') direction = 'right';
+                    break;
+            }
+
+            // If game is not running and an arrow key is pressed, start the game
+            if (!isGameRunning && ['ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight'].includes(e.key)) {
+                initGame(); // Reset state
+                postStartGame(); // Notify backend
+                startGameLoop(); // Start the game loop
+                gameMessage.textContent = ''; // Clear message
+                isGameRunning = true;
+            }
+        });
+
+        // Initial setup on page load
+        document.addEventListener('DOMContentLoaded', () => {
+            fetchGameState(); // Get initial high score
+            initGame(); // Set up the game board initially
+        });
+
+    </script>
+</body>
+</html>
